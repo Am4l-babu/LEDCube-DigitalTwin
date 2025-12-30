@@ -1,0 +1,33 @@
+# --- Python Ignores (For your Simulation) ---
+__pycache__/
+*.py[cod]
+
+# --- Windows & Mac OS Ignores ---
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# --- PlatformIO Builds (Ensure this is present) ---
+.pio/
+# --- Environment Files ---
+.env
+.venv/
+# --- Log Files ---
+*.log
+# --- Dependency Directories ---
+lib/
+# --- Compiled Object Files ---
+*.obj
+*.elf
+*.bin
+*.hex
+*.objdump
+*.map
+# --- Backup Files ---
+*~.bak
+*.backup
+# --- Temporary Files ---
+*.tmp
+*.temp
+# --- Arduino Secrets (Ignore your secrets file) ---
+src/arduino_secrets.h   
