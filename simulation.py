@@ -4,100 +4,126 @@ import struct
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
-
 # --- Configuration ---
-ESP_IP = os.getenv('ESP_IP', '192.168.1.1')  # Load from .env file
-UDP_PORT = int(os.getenv('UDP_PORT', '4210'))  # Load from .env file
+load_dotenv()
+ESP_IP = os.getenv('ESP_IP', '192.168.1.15') 
+UDP_PORT = int(os.getenv('UDP_PORT', 4210))
 
-# --- State Variables ---
-# Default to RED color
-current_brush_color = color.red 
-brush_name = "RED"
+# --- Constants & State ---
+# Layer Colors: Layer 0 (Bottom) -> Layer 3 (Top)
+LAYER_COLORS = [color.blue, color.yellow, color.green, color.red]
+HOVER_COLOR = vector(0.4, 0.4, 0.4) 
+OFF_COLOR = vector(0.2, 0.2, 0.2)   
+
+hovered_led = None 
 
 # --- Visual Setup ---
-scene.title = "Interactive Digital Twin (Color Paint Mode)"
+scene.title = "4x4x4 Digital Twin"
 scene.background = color.black
-scene.width = 800
-scene.height = 600
-scene.caption = "\nControls:\n"
+scene.width = 1000
+scene.height = 800
+scene.center = vector(3, 3, 3)
+scene.lights = []
+local_light(pos=vector(10, 10, 10), color=color.white)
 
-# --- UI Controls (Buttons) ---
-def set_red(b):
-    global current_brush_color, brush_name
-    current_brush_color = color.red
-    brush_name = "RED"
-    print("Brush set to RED")
+# --- Networking ---
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-def set_green(b):
-    global current_brush_color, brush_name
-    current_brush_color = color.green
-    brush_name = "GREEN"
-    print("Brush set to GREEN")
+def send_udp_command(layer, index, state):
+    try:
+        packet = struct.pack('BBBB', ord('C'), layer, index, state)
+        sock.sendto(packet, (ESP_IP, UDP_PORT))
+    except Exception as e:
+        print(f"Network Error: {e}")
 
-def clear_all(b):
-    # Turn off all spheres visually
-    for layer in leds:
-        for sphere_obj in layer:
-            sphere_obj.color = color.gray(0.2)
-            sphere_obj.emissive = False
-    # Send "OFF" command for all layers to ESP (Optional implementation)
-
-button(bind=set_red, text='Select RED', color=color.white, background=color.red)
-scene.append_to_caption("  ") # Spacer
-button(bind=set_green, text='Select GREEN', color=color.white, background=color.green)
-scene.append_to_caption("  ")
-button(bind=clear_all, text='Clear All', color=color.black, background=color.white)
-
-scene.append_to_caption("\n\n")
+# --- Helper Function to Create a "Real" LED ---
+def make_led(x, y, z):
+    core = sphere(pos=vector(x*2, z*2, y*2), 
+                  radius=0.3, 
+                  color=OFF_COLOR,
+                  shininess=0.8,              
+                  emissive=False)
+    
+    glow = sphere(pos=core.pos, 
+                  radius=0.8,                  
+                  opacity=0.3,                 
+                  visible=False,               
+                  emissive=True) 
+    
+    core.glow_aura = glow
+    core.grid_pos = (x, y, z)
+    core.is_on = False
+    core.my_layer_color = LAYER_COLORS[z] 
+    
+    return core
 
 # --- Create Grid ---
-leds = []
+leds_grid = [] 
+leds_flat = [] 
+
 for z in range(4):     
     layer = []
     for y in range(4): 
         for x in range(4): 
-            led = sphere(pos=vector(x*2, z*2, y*2), radius=0.5, color=color.gray(0.2))
-            led.grid_pos = (x, y, z) 
-            led.is_on = False # Track logical state
+            led = make_led(x, y, z)
             layer.append(led)
-    leds.append(layer)
+            leds_flat.append(led)
+    leds_grid.append(layer)
 
-# --- Network Setup ---
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-# --- Interaction Logic ---
-def on_mouse_click(evt):
-    hit_object = scene.mouse.pick
+# --- Core Logic Functions ---
+def set_led_state(led_obj, turn_on):
+    x, y, z = led_obj.grid_pos
     
-    if hit_object is not None and hasattr(hit_object, 'grid_pos'):
-        x, y, z = hit_object.grid_pos
-        
-        # Toggle Logic
-        if hit_object.is_on:
-            # Turn OFF
-            hit_object.color = color.gray(0.2)
-            hit_object.emissive = False
-            hit_object.is_on = False
-            state = 0
-            print(f"LED {z},{y},{x} turned OFF")
-        else:
-            # Turn ON with CURRENT BRUSH COLOR
-            hit_object.color = current_brush_color
-            hit_object.emissive = True
-            hit_object.is_on = True
-            state = 1
-            print(f"LED {z},{y},{x} painted {brush_name}")
+    if turn_on:
+        led_obj.color = led_obj.my_layer_color + vector(0.3, 0.3, 0.3)
+        led_obj.emissive = True
+        led_obj.glow_aura.color = led_obj.my_layer_color
+        led_obj.glow_aura.visible = True
+        led_obj.is_on = True
+        state_bit = 1
+    else:
+        led_obj.color = OFF_COLOR
+        led_obj.emissive = False
+        led_obj.glow_aura.visible = False
+        led_obj.is_on = False
+        state_bit = 0
 
-        # --- Hardware Communication ---
-        # Since physical LEDs are single color, we just send ON (1) or OFF (0)
-        # We do NOT send the color info to the ESP because the hardware doesn't support it.
-        linear_index = (y * 4) + x
-        packet = struct.pack('BBBB', ord('C'), z, linear_index, state)
-        sock.sendto(packet, (ESP_IP, UDP_PORT))
+    linear_index = (y * 4) + x
+    send_udp_command(z, linear_index, state_bit)
+
+def clear_all_synced(b):
+    print("Clearing all...")
+    for led_obj in leds_flat:
+        if led_obj.is_on:
+            set_led_state(led_obj, turn_on=False)
+
+# --- UI Controls ---
+scene.append_to_caption("\n")
+button(bind=clear_all_synced, text='Clear All', color=color.black, background=color.white)
+
+# --- Mouse Interaction Events ---
+def on_mouse_click(evt):
+    hit = scene.mouse.pick
+    if hit is not None and hasattr(hit, 'grid_pos'):
+        new_state = not hit.is_on
+        set_led_state(hit, new_state)
 
 scene.bind('mousedown', on_mouse_click)
 
+# --- Main Animation Loop ---
 while True:
-    rate(30)
+    rate(60)
+    
+    hit_now = scene.mouse.pick
+
+    # 1. Un-hover previous
+    if hovered_led is not None and hovered_led != hit_now:
+        if not hovered_led.is_on:
+            hovered_led.color = OFF_COLOR
+        hovered_led = None 
+
+    # 2. Hover new
+    if hit_now is not None and hasattr(hit_now, 'grid_pos'):
+        if not hit_now.is_on:
+             hit_now.color = HOVER_COLOR
+             hovered_led = hit_now
