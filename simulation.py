@@ -4,126 +4,83 @@ import struct
 import os
 from dotenv import load_dotenv
 
-# --- Configuration ---
 load_dotenv()
 ESP_IP = os.getenv('ESP_IP', '192.168.1.15') 
 UDP_PORT = int(os.getenv('UDP_PORT', 4210))
 
-# --- Constants & State ---
-# Layer Colors: Layer 0 (Bottom) -> Layer 3 (Top)
-LAYER_COLORS = [color.blue, color.yellow, color.green, color.red]
-HOVER_COLOR = vector(0.4, 0.4, 0.4) 
-OFF_COLOR = vector(0.2, 0.2, 0.2)   
-
-hovered_led = None 
-
-# --- Visual Setup ---
-scene.title = "4x4x4 Digital Twin"
+# --- Setup Scene ---
+scene.title = "Digital Twin & Effect Controller"
 scene.background = color.black
 scene.width = 1000
 scene.height = 800
 scene.center = vector(3, 3, 3)
-scene.lights = []
-local_light(pos=vector(10, 10, 10), color=color.white)
 
 # --- Networking ---
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# We need to bind to listen for the "Broadcast" from ESP
+sock.bind(("0.0.0.0", UDP_PORT)) 
+sock.setblocking(False) # Non-blocking mode
 
-def send_udp_command(layer, index, state):
-    try:
-        packet = struct.pack('BBBB', ord('C'), layer, index, state)
-        sock.sendto(packet, (ESP_IP, UDP_PORT))
-    except Exception as e:
-        print(f"Network Error: {e}")
+def send_effect_command(effect_id):
+    # Packet: Header 'E', Effect ID, Placeholder, Placeholder
+    packet = struct.pack('BBBB', ord('E'), effect_id, 0, 0)
+    sock.sendto(packet, (ESP_IP, UDP_PORT))
+    print(f"Sent Effect Command: {effect_id}")
 
-# --- Helper Function to Create a "Real" LED ---
-def make_led(x, y, z):
-    core = sphere(pos=vector(x*2, z*2, y*2), 
-                  radius=0.3, 
-                  color=OFF_COLOR,
-                  shininess=0.8,              
-                  emissive=False)
-    
-    glow = sphere(pos=core.pos, 
-                  radius=0.8,                  
-                  opacity=0.3,                 
-                  visible=False,               
-                  emissive=True) 
-    
-    core.glow_aura = glow
-    core.grid_pos = (x, y, z)
-    core.is_on = False
-    core.my_layer_color = LAYER_COLORS[z] 
-    
-    return core
+# --- Menu Handler ---
+def menu_choice(m):
+    val = m.selected
+    if val == "Interactive (Paint)":
+        send_effect_command(0)
+    elif val == "Rain Effect":
+        send_effect_command(1)
+    elif val == "Propeller":
+        send_effect_command(2)
+    elif val == "Spiral":
+        send_effect_command(3)
 
-# --- Create Grid ---
-leds_grid = [] 
-leds_flat = [] 
+scene.append_to_caption("\nSelect Effect: ")
+menu(choices=['Interactive (Paint)', 'Rain Effect', 'Propeller', 'Spiral'], bind=menu_choice)
+scene.append_to_caption("\n\n")
 
+# --- LED Grid Setup ---
+leds = []
 for z in range(4):     
     layer = []
     for y in range(4): 
         for x in range(4): 
-            led = make_led(x, y, z)
+            led = sphere(pos=vector(x*2, z*2, y*2), radius=0.3, color=vector(0.2,0.2,0.2))
+            led.grid_pos = (x, y, z)
             layer.append(led)
-            leds_flat.append(led)
-    leds_grid.append(layer)
+    leds.append(layer)
 
-# --- Core Logic Functions ---
-def set_led_state(led_obj, turn_on):
-    x, y, z = led_obj.grid_pos
-    
-    if turn_on:
-        led_obj.color = led_obj.my_layer_color + vector(0.3, 0.3, 0.3)
-        led_obj.emissive = True
-        led_obj.glow_aura.color = led_obj.my_layer_color
-        led_obj.glow_aura.visible = True
-        led_obj.is_on = True
-        state_bit = 1
-    else:
-        led_obj.color = OFF_COLOR
-        led_obj.emissive = False
-        led_obj.glow_aura.visible = False
-        led_obj.is_on = False
-        state_bit = 0
-
-    linear_index = (y * 4) + x
-    send_udp_command(z, linear_index, state_bit)
-
-def clear_all_synced(b):
-    print("Clearing all...")
-    for led_obj in leds_flat:
-        if led_obj.is_on:
-            set_led_state(led_obj, turn_on=False)
-
-# --- UI Controls ---
-scene.append_to_caption("\n")
-button(bind=clear_all_synced, text='Clear All', color=color.black, background=color.white)
-
-# --- Mouse Interaction Events ---
-def on_mouse_click(evt):
-    hit = scene.mouse.pick
-    if hit is not None and hasattr(hit, 'grid_pos'):
-        new_state = not hit.is_on
-        set_led_state(hit, new_state)
-
-scene.bind('mousedown', on_mouse_click)
-
-# --- Main Animation Loop ---
+# --- Main Loop ---
 while True:
     rate(60)
     
-    hit_now = scene.mouse.pick
-
-    # 1. Un-hover previous
-    if hovered_led is not None and hovered_led != hit_now:
-        if not hovered_led.is_on:
-            hovered_led.color = OFF_COLOR
-        hovered_led = None 
-
-    # 2. Hover new
-    if hit_now is not None and hasattr(hit_now, 'grid_pos'):
-        if not hit_now.is_on:
-             hit_now.color = HOVER_COLOR
-             hovered_led = hit_now
+    # 1. Listen for Updates from ESP (The Twin Logic)
+    try:
+        data, addr = sock.recvfrom(1024)
+        if data[0] == 68: # 'D' Header
+            # Parse the 4 layers (2 bytes each)
+            for z in range(4):
+                hi = data[1 + (z*2)]
+                lo = data[1 + (z*2) + 1]
+                bits = (hi << 8) | lo
+                
+                for i in range(16):
+                    is_on = (bits >> i) & 1
+                    # Map 0-15 to x,y
+                    row = i // 4
+                    col = i % 4
+                    
+                    # Update Visuals
+                    target = leds[z][(row*4)+col]
+                    if is_on:
+                        target.color = color.cyan
+                        target.emissive = True
+                    else:
+                        target.color = vector(0.2, 0.2, 0.2)
+                        target.emissive = False
+    except:
+        pass # No data received this frame
