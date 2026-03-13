@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <WiFi.h>
+#include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include "arduino_secrets.h" // Contains WiFi credentials and IP details  
 
@@ -11,14 +11,17 @@ unsigned int udpPort = 4210; // Listening port
 
 WiFiUDP Udp;
 
-// Define your 16 Pins for Layer 0
-const int layer0Pins[] = {13, 12, 14, 27, 26, 25, 33, 32, 15, 23, 4, 5, 18, 19, 21, 22};
+// Define your 16 Pins for Layer 0 (remapped for ESP8266 NodeMCU)
+// GPIOs available: 0,2,4,5,12,13,14,15,16 + D0-D8 labels
+// NOTE: Only 9 truly usable GPIOs; using 9 here. Expand with shift register for full 16.
+const int layer0Pins[] = {16, 5, 4, 0, 2, 14, 12, 13, 15};
+const int NUM_PINS = 9; // ESP8266 has fewer GPIO pins than ESP32
 
 void setup() {
   Serial.begin(115200);
   
   // 1. Setup Pins
-  for (int i = 0; i < 16; i++) {
+  for (int i = 0; i < NUM_PINS; i++) {
     pinMode(layer0Pins[i], OUTPUT);
     digitalWrite(layer0Pins[i], LOW);
   }
@@ -58,7 +61,7 @@ void loop() {
        
        Serial.printf("Command: LED %d -> %s\n", ledIndex, state ? "ON" : "OFF");
 
-       if (ledIndex >= 0 && ledIndex < 16) {
+       if (ledIndex >= 0 && ledIndex < NUM_PINS) {
           digitalWrite(layer0Pins[ledIndex], state ? HIGH : LOW);
        }
     }
